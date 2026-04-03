@@ -2,3 +2,9 @@ torch
 transformers
 tqdm
 accelerate
+vllm
+pytest
+pytest-cov
+coverage
+numpy
+pandas
