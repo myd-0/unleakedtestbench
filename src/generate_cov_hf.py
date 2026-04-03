@@ -35,6 +35,8 @@ def extract_function_names_from_completion(completion: str) -> list:
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    parser.add_argument("--dataset", type=str, default="ULT",
+                        help="dataset name or path (e.g. ULT, ULT_Lite, PLT, or a .jsonl path)")
     parser.add_argument("--num_tests", type=int, default=5, help='number of tests generated per program')
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--max_tokens", type=int, default=1024)
@@ -60,6 +62,35 @@ def resolve_backend(args):
             print("[+] No GPU detected — using transformers backend on CPU")
             return "transformers"
     return args.backend
+
+
+def resolve_dataset_path(dataset_arg: str) -> Path:
+    repo_root = Path(__file__).parent.parent
+    datasets_dir = repo_root / "datasets"
+
+    dataset_aliases = {
+        "TestBench": "ULT",
+        "ULT": "ULT",
+        "ULT_Lite": "ULT_Lite",
+        "PLT": "PLT",
+    }
+
+    dataset_name = dataset_aliases.get(dataset_arg, dataset_arg)
+    candidate = Path(dataset_name)
+
+    if candidate.is_absolute():
+        dataset_path = candidate
+    elif candidate.suffix == ".jsonl":
+        dataset_path = repo_root / candidate
+        if not dataset_path.exists():
+            dataset_path = datasets_dir / candidate.name
+    else:
+        dataset_path = datasets_dir / f"{dataset_name}.jsonl"
+
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {dataset_path}")
+
+    return dataset_path
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +349,7 @@ if __name__ == '__main__':
     output_dir = Path('results')
     output_dir.mkdir(exist_ok=True)
 
-    dataset_path = Path(__file__).parent.parent / 'datasets' / 'ULT.jsonl'
+    dataset_path = resolve_dataset_path(args.dataset)
     dataset = read_jsonl(dataset_path)
     if args.max_samples is not None:
         dataset = dataset[:args.max_samples]
@@ -337,12 +368,14 @@ if __name__ == '__main__':
     for model_name in models_to_run:
         args.model = model_name
         model_abbrv = args.model.split('/')[-1]
+        dataset_suffix = 'full' if dataset_path.stem == 'ULT' else dataset_path.stem.lower()
         print('=' * 50)
         print(f'Model: {model_abbrv}  |  Backend: {backend}')
+        print(f'Dataset: {dataset_path.name}')
         print('=' * 50)
 
-        output_file = output_dir / f'TestBench_{model_abbrv}_{args.num_tests}_full.jsonl'
-        checkpoint_file = output_dir / f'TestBench_{model_abbrv}_{args.num_tests}_partial.jsonl'
+        output_file = output_dir / f'TestBench_{model_abbrv}_{args.num_tests}_{dataset_suffix}.jsonl'
+        checkpoint_file = output_dir / f'TestBench_{model_abbrv}_{args.num_tests}_{dataset_suffix}_partial.jsonl'
         if output_file.exists():
             print(f"Results for {model_abbrv} already exist, skipping...")
             continue
