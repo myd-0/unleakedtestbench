@@ -5,6 +5,7 @@
 
 import re
 import os
+import ast
 import json
 import string
 import random
@@ -60,6 +61,30 @@ def rename_test_functions(test_code):
             new_lines.append(line)
     
     return '\n'.join(new_lines)
+
+
+def sanitize_test_case(test_code):
+    """Normalize common LLM formatting so tests can be executed as Python."""
+    cleaned = test_code.strip()
+    cleaned = re.sub(r"^\s*```(?:python)?\s*\n?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n?\s*```\s*$", "", cleaned)
+
+    func_start = re.search(r"(?m)^\s*def\s+test_[A-Za-z0-9_]*\s*\(", cleaned)
+    if func_start:
+        cleaned = cleaned[func_start.start():].lstrip()
+
+    lines = cleaned.splitlines()
+    for end in range(len(lines), 0, -1):
+        candidate = "\n".join(lines[:end]).rstrip()
+        if not candidate:
+            continue
+        try:
+            ast.parse(candidate)
+            return candidate
+        except SyntaxError:
+            continue
+
+    return cleaned
 
 def parse_pytest_output(output: str) -> dict:
     """
@@ -148,7 +173,7 @@ def cosmic_ray_init(benchmark_name, model_generation_file, num_test_cases=5, tim
         with open(f'data/{benchmark_name}/mutation_{num_test_cases}/{model_name}/task_{idx}/test.py', 'w') as f:
             test_code = code_import + '\n\n' + 'from mod import *' + '\n\n'
             for test in instance['tests'][:num_test_cases]:
-                test_code += f'{test}\n\n'
+                test_code += f'{sanitize_test_case(test)}\n\n'
             # test_code += "\n\n" + "#" * 100 + "\n\n"
             f.write(test_code)         
 
@@ -392,4 +417,3 @@ if __name__ == "__main__":
         # mutation_status(args.benchmark_name, model_generation_file_path, num_test_cases=num_test_cases)
         # mutation_run(args.benchmark_name, model_generation_file_path, num_test_cases)
         mutation_statistic(args.benchmark_name, model_generation_file_path, num_test_cases, baseline_test_cases=5)
-
