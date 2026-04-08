@@ -6,7 +6,6 @@ from pathlib import Path
 from argparse import ArgumentParser
 
 from tqdm import tqdm
-import torch
 from huggingface_hub import snapshot_download
 
 from data_utils import read_jsonl, write_jsonl
@@ -47,8 +46,6 @@ def parse_args():
 def resolve_backend(args):
     if args.backend != 'vllm':
         raise ValueError(VLLM_ONLY_MESSAGE)
-    if not torch.cuda.is_available():
-        raise ValueError('vLLM experimental adapter runs require CUDA.')
     print('[+] Using experimental vLLM LoRA backend')
     return 'vllm'
 
@@ -304,6 +301,8 @@ if __name__ == '__main__':
     if output_file.exists():
         print(f'Results for {model_abbrv} already exist, skipping...')
         raise SystemExit(0)
+
+    os.environ.setdefault('VLLM_WORKER_MULTIPROC_METHOD', 'spawn')
 
     from transformers import AutoTokenizer
     from vllm import LLM
