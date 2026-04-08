@@ -104,6 +104,10 @@ def make_model_basename(model_name: str, adapter_label: str | None) -> str:
     return model_abbrv
 
 
+def has_lora_modules(model) -> bool:
+    return any("lora_A" in name or "lora_B" in name for name, _ in model.named_modules())
+
+
 def resolve_dataset_path(dataset_arg: str) -> Path:
     repo_root = Path(__file__).parent.parent
     datasets_dir = repo_root / "datasets"
@@ -424,9 +428,8 @@ if __name__ == '__main__':
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
 
-            tokenizer_source = resolve_model_source(args.adapter_path) or args.model
             tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer_source,
+                args.model,
                 token=os.getenv("HUGGINGFACE_TOKEN"),
                 trust_remote_code=True,
             )
@@ -484,6 +487,10 @@ if __name__ == '__main__':
                         resolve_model_source(args.adapter_path),
                         token=os.getenv("HUGGINGFACE_TOKEN"),
                     )
+                    print(f"Loaded adapter: {resolve_model_source(args.adapter_path)}")
+                    print(f"LoRA modules present: {has_lora_modules(hf_model)}")
+                else:
+                    print("Loaded base model only.")
 
                 testing_results = testgeneration_multiround_transformers(
                     args, dataset, prompt_template, system_message, tokenizer, hf_model, checkpoint_path=checkpoint_file
