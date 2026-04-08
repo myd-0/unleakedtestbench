@@ -9,6 +9,8 @@ import torch
 
 from data_utils import read_jsonl, write_jsonl, add_lineno
 
+ADAPTER_TRANSFORMERS_ONLY_MESSAGE = "Adapter runs currently support the transformers backend only."
+
 DEFAULT_MODEL = 'codellama/CodeLlama-7b-Instruct-hf'
 
 model_list = [
@@ -47,10 +49,21 @@ def parse_args():
                         help='inference backend: auto (detect), vllm (CUDA only), transformers (MPS/CPU)')
     parser.add_argument("--max_samples", type=int, default=None,
                         help='limit number of dataset samples (useful for quick tests)')
+    parser.add_argument("--adapter-path", type=str, default=None,
+                        help='Optional PEFT adapter path or Hugging Face repo id.')
+    parser.add_argument("--adapter-name", type=str, default=None,
+                        help='Optional path-safe adapter label used in output filenames.')
     return parser.parse_args()
 
 
 def resolve_backend(args):
+    if args.adapter_path:
+        if args.backend in {"auto", "transformers"}:
+            if args.backend == "auto":
+                print("[+] Adapter detected — forcing transformers backend")
+            return "transformers"
+        raise ValueError(ADAPTER_TRANSFORMERS_ONLY_MESSAGE)
+
     if args.backend == "auto":
         if torch.cuda.is_available():
             print("[+] CUDA detected — using vLLM backend")
@@ -62,6 +75,33 @@ def resolve_backend(args):
             print("[+] No GPU detected — using transformers backend on CPU")
             return "transformers"
     return args.backend
+
+
+def resolve_model_source(source: str | None) -> str | None:
+    if source is None:
+        return None
+    candidate = Path(source).expanduser()
+    if candidate.exists():
+        return str(candidate.resolve())
+    return source
+
+
+def make_adapter_label(adapter_path: str | None, adapter_name: str | None) -> str | None:
+    if adapter_path is None:
+        return None
+    if adapter_name:
+        raw = adapter_name
+    else:
+        raw = adapter_path.rstrip('/').split('/')[-1]
+    safe = re.sub(r'[^A-Za-z0-9._-]+', '-', raw).strip('-')
+    return safe or 'adapter'
+
+
+def make_model_basename(model_name: str, adapter_label: str | None) -> str:
+    model_abbrv = model_name.split('/')[-1]
+    if adapter_label:
+        return f"{model_abbrv}__{adapter_label}"
+    return model_abbrv
 
 
 def resolve_dataset_path(dataset_arg: str) -> Path:
@@ -367,7 +407,8 @@ if __name__ == '__main__':
 
     for model_name in models_to_run:
         args.model = model_name
-        model_abbrv = args.model.split('/')[-1]
+        adapter_label = make_adapter_label(args.adapter_path, args.adapter_name)
+        model_abbrv = make_model_basename(args.model, adapter_label)
         dataset_suffix = 'full' if dataset_path.stem == 'ULT' else dataset_path.stem.lower()
         print('=' * 50)
         print(f'Model: {model_abbrv}  |  Backend: {backend}')
@@ -383,8 +424,9 @@ if __name__ == '__main__':
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
 
+            tokenizer_source = resolve_model_source(args.adapter_path) or args.model
             tokenizer = AutoTokenizer.from_pretrained(
-                args.model,
+                tokenizer_source,
                 token=os.getenv("HUGGINGFACE_TOKEN"),
                 trust_remote_code=True,
             )
@@ -434,6 +476,14 @@ if __name__ == '__main__':
                     torch_dtype=dtype,
                     device_map=device_map,
                 )
+
+                if args.adapter_path:
+                    from peft import PeftModel
+                    hf_model = PeftModel.from_pretrained(
+                        hf_model,
+                        resolve_model_source(args.adapter_path),
+                        token=os.getenv("HUGGINGFACE_TOKEN"),
+                    )
 
                 testing_results = testgeneration_multiround_transformers(
                     args, dataset, prompt_template, system_message, tokenizer, hf_model, checkpoint_path=checkpoint_file
