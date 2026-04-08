@@ -2,6 +2,7 @@ torch
 transformers
 tqdm
 accelerate
+peft
 vllm
 pytest
 pytest-cov
