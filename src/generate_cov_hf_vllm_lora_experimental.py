@@ -166,6 +166,13 @@ def strip_think_tags(text):
     return text
 
 
+def build_conversation_log_entry(messages, generated_test, template_append, round_number):
+    messages_for_log = [m.copy() for m in messages]
+    messages_for_log.append({'role': 'assistant', 'content': generated_test})
+    messages_for_log.append({'role': 'user', 'content': template_append})
+    return {'round': round_number, 'messages_sent': messages_for_log, 'response': generated_test}
+
+
 def prepare_prompts_for_batch(data_batch, prompt_template, system_message, tokenizer):
     prompts = []
     for data in data_batch:
@@ -184,7 +191,7 @@ def prepare_prompts_for_batch(data_batch, prompt_template, system_message, token
                 {'role': 'user', 'content': prompt},
             ]
             formatted = format_chat_template(tokenizer, messages)
-            prompts.append((formatted, func_name, data['code'], data['prompt'], data['task_id']))
+            prompts.append((formatted, messages, func_name, data['code'], data['prompt'], data['task_id']))
         except Exception as e:
             print(f'Error preparing prompt: {e}')
     return prompts
@@ -196,12 +203,12 @@ def testgeneration_vllm_batch(prepared_prompts, llm, sampling_params, tokenizer,
 
     truncated_prompts = []
     for prompt_data in prepared_prompts:
-        prompt_text, func_name, code, desc, task_id = prompt_data
+        prompt_text, messages, func_name, code, desc, task_id = prompt_data
         tokens = tokenizer.encode(prompt_text)
         if len(tokens) > max_tokens:
             print(f'Truncating prompt from {len(tokens)} to {max_tokens} tokens')
             truncated_text = tokenizer.decode(tokens[-max_tokens:])
-            truncated_prompts.append((truncated_text, func_name, code, desc, task_id))
+            truncated_prompts.append((truncated_text, messages, func_name, code, desc, task_id))
         else:
             truncated_prompts.append(prompt_data)
 
@@ -210,10 +217,10 @@ def testgeneration_vllm_batch(prepared_prompts, llm, sampling_params, tokenizer,
 
     results = []
     for i, output in enumerate(outputs):
-        _, func_name, code, desc, task_id = truncated_prompts[i]
+        _, messages, func_name, code, desc, task_id = truncated_prompts[i]
         generated_test = strip_think_tags(output.outputs[0].text)
         results.append({'func_name': func_name, 'code': code, 'test': generated_test,
-                        'prompt': desc, 'task_id': task_id})
+                        'prompt': desc, 'task_id': task_id, 'messages': [m.copy() for m in messages]})
     return results
 
 
@@ -231,7 +238,8 @@ def testgeneration_multiround_vllm(args, dataset, prompt_template, system_messag
         results = testgeneration_vllm_batch(prepared, llm, sampling_params, tokenizer, lora_request)
         for r in results:
             all_results.append({'func_name': r['func_name'], 'code': r['code'],
-                                'tests': [r['test']], 'prompt': r['prompt'], 'task_id': r['task_id']})
+                                'tests': [r['test']], 'prompt': r['prompt'], 'task_id': r['task_id'],
+                                'conversation_log': [build_conversation_log_entry(r['messages'], r['test'], template_append, 1)]})
         if checkpoint_path is not None:
             write_jsonl(all_results, checkpoint_path)
 
@@ -257,7 +265,7 @@ def testgeneration_multiround_vllm(args, dataset, prompt_template, system_messag
                     messages = truncate_conversation(messages, tokenizer, args.max_context_length)
 
                 formatted = format_chat_template(tokenizer, messages)
-                prepared.append((formatted, result['func_name'], result['code'],
+                prepared.append((formatted, [m.copy() for m in messages], result['func_name'], result['code'],
                                  result['prompt'], result['task_id']))
 
             if prepared:
@@ -266,6 +274,9 @@ def testgeneration_multiround_vllm(args, dataset, prompt_template, system_messag
                     idx = batch_start + i
                     if idx < len(all_results):
                         all_results[idx]['tests'].append(new_result['test'])
+                        all_results[idx].setdefault('conversation_log', []).append(
+                            build_conversation_log_entry(new_result['messages'], new_result['test'], template_append, test_round + 1)
+                        )
                 if checkpoint_path is not None:
                     write_jsonl(all_results, checkpoint_path)
 
