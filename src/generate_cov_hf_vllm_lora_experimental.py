@@ -40,6 +40,16 @@ def parse_args():
                         help='experimental inference backend, fixed to vllm')
     parser.add_argument('--max_samples', type=int, default=None,
                         help='limit number of dataset samples (useful for quick tests)')
+    parser.add_argument('--generation-config', type=str, default='auto', choices=['auto', 'none'],
+                        help='Sampling defaults source: auto uses the model generation_config, none uses neutral defaults.')
+    parser.add_argument('--seed', type=int, default=0,
+                        help='Seed forwarded to vLLM when supported.')
+    parser.add_argument('--batch-invariant', action='store_true',
+                        help='Set VLLM_BATCH_INVARIANT=1 for more stable batched comparisons when supported.')
+    parser.add_argument('--deterministic-scheduling', action='store_true',
+                        help='Set VLLM_ENABLE_V1_MULTIPROCESSING=0 for more deterministic offline scheduling.')
+    parser.add_argument('--fair-compare', action='store_true',
+                        help='Favor transformers-like comparisons by forcing batch_size=1 and deterministic scheduling.')
     return parser.parse_args()
 
 
@@ -166,6 +176,39 @@ def strip_think_tags(text):
     return text
 
 
+def build_sampling_params(args, llm):
+    from vllm import SamplingParams
+
+    sampling_params = None
+    if args.generation_config == 'auto' and hasattr(llm, 'get_default_sampling_params'):
+        try:
+            sampling_params = llm.get_default_sampling_params()
+        except Exception as e:
+            print(f'Could not load model default sampling params: {e}')
+
+    if sampling_params is None:
+        sampling_params = SamplingParams()
+
+    sampling_params.max_tokens = args.max_tokens
+    sampling_params.temperature = args.temperature
+
+    return sampling_params
+
+
+def sampling_params_summary(sampling_params):
+    fields = [
+        'temperature',
+        'top_p',
+        'top_k',
+        'min_p',
+        'max_tokens',
+        'repetition_penalty',
+        'stop',
+        'stop_token_ids',
+    ]
+    return {field: getattr(sampling_params, field, None) for field in fields}
+
+
 def build_conversation_log_entry(messages, generated_test, template_append, round_number):
     messages_for_log = [m.copy() for m in messages]
     messages_for_log.append({'role': 'assistant', 'content': generated_test})
@@ -224,10 +267,8 @@ def testgeneration_vllm_batch(prepared_prompts, llm, sampling_params, tokenizer,
     return results
 
 
-def testgeneration_multiround_vllm(args, dataset, prompt_template, system_message, tokenizer, llm, lora_request, checkpoint_path=None):
-    from vllm import SamplingParams
+def testgeneration_multiround_vllm(args, dataset, prompt_template, system_message, tokenizer, llm, lora_request, sampling_params, checkpoint_path=None):
     all_results = []
-    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=args.max_tokens, top_p=1.0)
     template_append = ('Generate another test method for the function under test. '
                        'Your answer must be different from previously-generated test cases, '
                        'and should cover different statements and branches.')
@@ -330,31 +371,58 @@ if __name__ == '__main__':
     adapter_rank = load_adapter_rank(adapter_local_path)
     base_model_abbrv = args.model.split('/')[-1]
 
+    if args.fair_compare:
+        args.batch_size = 1
+        args.deterministic_scheduling = True
+
+    if args.batch_invariant:
+        os.environ['VLLM_BATCH_INVARIANT'] = '1'
+    if args.deterministic_scheduling:
+        os.environ['VLLM_ENABLE_V1_MULTIPROCESSING'] = '0'
+
     print(f'Number of samples: {len(dataset)}')
     print(f'Loaded adapter repo/path: {args.adapter_path}')
     print(f'Resolved adapter local path: {adapter_local_path}')
     print('vLLM LoRA enabled: True')
+    print(f'generation_config source: {args.generation_config}')
+    print(f'seed: {args.seed}')
+    if args.batch_invariant:
+        print('VLLM_BATCH_INVARIANT=1')
+    if args.deterministic_scheduling:
+        print('VLLM_ENABLE_V1_MULTIPROCESSING=0')
+    if args.fair_compare:
+        print('fair_compare=True (batch_size forced to 1)')
 
     model_context_length = 16384
     if hasattr(tokenizer, 'model_max_length'):
         model_context_length = min(tokenizer.model_max_length, model_context_length)
 
-    llm = LLM(
-        model=args.model,
-        tensor_parallel_size=args.tensor_parallel_size,
-        trust_remote_code=True,
-        dtype='float16',
-        max_model_len=model_context_length,
-        enable_lora=True,
-        max_loras=1,
-        max_lora_rank=adapter_rank,
-        quantization='awq' if Path(f'./quantized/{base_model_abbrv}_awq').exists() else None,
-    )
+    llm_kwargs = {
+        'model': args.model,
+        'tensor_parallel_size': args.tensor_parallel_size,
+        'trust_remote_code': True,
+        'dtype': 'float16',
+        'max_model_len': model_context_length,
+        'enable_lora': True,
+        'max_loras': 1,
+        'max_lora_rank': adapter_rank,
+        'quantization': 'awq' if Path(f'./quantized/{base_model_abbrv}_awq').exists() else None,
+    }
+    llm_signature = inspect.signature(LLM).parameters
+    if args.generation_config == 'auto' and 'generation_config' in llm_signature:
+        llm_kwargs['generation_config'] = 'auto'
+    if 'seed' in llm_signature:
+        llm_kwargs['seed'] = args.seed
+
+    llm = LLM(**llm_kwargs)
+
+    sampling_params = build_sampling_params(args, llm)
+    print(f'Effective sampling params: {sampling_params_summary(sampling_params)}')
 
     lora_request = LoRARequest(adapter_label, 1, adapter_local_path)
 
     testing_results = testgeneration_multiround_vllm(
-        args, dataset, prompt_template, system_message, tokenizer, llm, lora_request, checkpoint_path=checkpoint_file
+        args, dataset, prompt_template, system_message, tokenizer, llm, lora_request, sampling_params, checkpoint_path=checkpoint_file
     )
 
     write_jsonl(testing_results, output_file)
