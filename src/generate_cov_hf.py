@@ -478,10 +478,10 @@ if __name__ == '__main__':
 
             else:  # transformers
                 if torch.backends.mps.is_available():
-                    dtype = torch.float16
+                    dtype = torch.bfloat16
                     device_map = None  # will move manually in the function
                 elif torch.cuda.is_available():
-                    dtype = torch.float16
+                    dtype = torch.bfloat16
                     device_map = "auto"
                 else:
                     dtype = torch.float32
