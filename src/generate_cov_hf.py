@@ -462,7 +462,7 @@ if __name__ == '__main__':
                     model=args.model,
                     tensor_parallel_size=args.tensor_parallel_size,
                     trust_remote_code=True,
-                    dtype="float16",
+                    dtype="bfloat16",
                     max_model_len=model_context_length,
                     quantization="awq" if Path(f"./quantized/{model_abbrv}_awq").exists() else None,
                 )
